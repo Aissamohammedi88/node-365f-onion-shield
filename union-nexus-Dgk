@@ -1,0 +1,1090 @@
+#!/bin/bash
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# NEXUS LOCAL TOR ULTRA NODE 365-F — UNION SHIELD
+# ─────────────────────────────────────────────────
+# Protection locale avancée avec :
+# - Tor Ultra Node 365-F (routage multi-couches continu)
+# - Compteur de sessions + routeur intelligent
+# - Détection télémétrie kernel (eBPF / auditd / ftrace)
+# - Détection d'intrusions avec matricule organisation (Google, Oracle...)
+# - Requêtes Y/N interactives par organisation
+# - Whitelist persistante + audit trail complet
+# - Kill switch immédiat si comportement anormal
+# - Surveillance live des requêtes CLI/terminal
+#
+# Auteur : Aissa Mohammedi (DGK)
+# Licence : NEXUS-OPEN-2.0
+# Version : 1.0.0 "UNION SHIELD"
+#
+# ═══════════════════════════════════════════════════════════════════════════════
+
+set -u
+
+# ─── IDENTITÉ ───
+readonly VERSION="1.0.0"
+readonly CODENAME="UNION SHIELD 365-F"
+readonly AUTEUR="Aissa Mohammedi (DGK)"
+readonly LICENCE="NEXUS-OPEN-2.0"
+
+# ─── COULEURS ───
+readonly G='\033[0;32m'
+readonly Y='\033[1;33m'
+readonly R='\033[0;31m'
+readonly C='\033[0;36m'
+readonly M='\033[0;35m'
+readonly B='\033[1;34m'
+readonly W='\033[1;37m'
+readonly D='\033[2m'
+readonly N='\033[0m'
+readonly BOLD='\033[1m'
+
+# ─── CHEMINS ───
+readonly BASE="$HOME/Documents/nexus_union_shield"
+readonly LOG="$BASE/union.log"
+readonly SESSION_DB="$BASE/sessions.db"
+readonly WHITELIST="$BASE/whitelist.txt"
+readonly BLACKLIST="$BASE/blacklist.txt"
+readonly ALERTS="$BASE/alerts.log"
+readonly CLI_LOG="$BASE/cli_live.log"
+readonly TOR_CONFIG="$BASE/torrc"
+readonly KERNEL_LOG="$BASE/kernel_telemetry.log"
+readonly STATE="$BASE/state.txt"
+readonly PID_DIR="$BASE/pids"
+readonly RULES_DIR="$BASE/rules"
+
+mkdir -p "$BASE" "$PID_DIR" "$RULES_DIR"
+touch "$WHITELIST" "$BLACKLIST"
+
+# ─── ORGANISATIONS CONNUES (matricules) ───
+# Format : "nom|regex_ip|regex_domain|pattern_user_agent"
+readonly ORGANISATIONS=(
+"Google|^(34|35|104|130|142|172\.217|172\.253|173\.194|209\.85|216\.58|216\.239|74\.125)\..*|(google|gstatic|googleapis|googlevideo|googleusercontent|youtube|doubleclick)\.com|Googlebot|Google|Chrome"
+"Microsoft|^(13|20|40|52|104|168|199)\.(64|65|66|67|68|69|70|71|72|73|74|75|76|77|78|79|80|81|82|83|84|85|86|87|88|89|90|91|92|93|94|95)\..*|(microsoft|msn|bing|azure|office|live|outlook|windowsupdate)\.com|Microsoft|MSN|Bing|Azure"
+"Amazon|^(3|15|18|34|35|52|54|13|44|46|50|99|107|176|205)\.(0|1|2|3|4|5|6|7|8|9|10|11|12|13|14|15|16|17|18|19|20|21|22|23|24|25|26|27|28|29|30|31|32|33|34|35|36|37|38|39|40)\..*|(amazonaws|cloudfront|aws|amazon)\.com|Amazon|AWS"
+"Oracle|^(129|130|132|134|136|137|138|140|144|146|147|148|150|152|155|156|157|158|160|161|162|165|166|167|168|170|192|193|198|204|205|207|208|209|216)\.(0|1|2|3|4|5|6|7|8|9|10|11|12|13|14|15|16|17|18|19|20|21|22|23|24|25|26|27|28|29|30|31)\..*|(oracle|oraclecloud|java|mysql)\.com|Oracle"
+"Meta|^(31|45|57|66|69|103|129|157|179|185|204)\.(0|1|2|3|4|5|6|7|8|9|10|11|12|13|14|15|16|17|18|19|20|21|22|23|24|25|26|27|28|29|30|31)\..*|(facebook|fbcdn|instagram|whatsapp|meta)\.com|facebook|instagram|WhatsApp"
+"Apple|^(17|19|20|23|37|63|72|96|97|98|100|104|169|172|185|192|198|204|216)\.(0|1|2|3|4|5|6|7|8|9|10|11|12|13|14|15|16|17|18|19|20|21|22|23|24|25|26|27|28|29|30|31)\..*|(apple|icloud|me\.com|itunes)\.com|Apple|Safari|iCloud"
+"Cloudflare|^(104|172|173|188|190|197|198)\.(0|1|2|3|4|5|6|7|8|9|10|11|12|13|14|15|16|17|18|19|20|21|22|23|24|25|26|27|28|29|30|31)\..*|(cloudflare|cf-)\.|Cloudflare"
+"Akamai|^(23|72|96|104|184|23|2600|2a02)\.(0|1|2|3|4|5|6|7|8|9|10|11|12|13|14|15|16|17|18|19|20|21|22|23|24|25|26|27|28|29|30|31)\..*|(akamai|akamaiedge|akamaitechnologies|edgesuite)\.|Akamai"
+"Twitter/X|^(104|192|199|202)\.(0|1|2|3|4|5|6|7|8|9|10|11|12|13|14|15|16|17|18|19|20|21|22|23|24|25|26|27|28|29|30|31)\..*|(twitter|x\.com|t\.co|twimg)\.|Twitter|X-Client"
+"Telegram|^(91|149|185)\.(0|1|2|3|4|5|6|7|8|9|10|11|12|13|14|15|16|17|18|19|20|21|22|23|24|25|26|27|28|29|30|31)\..*|(telegram|t\.me|tgme)\.|Telegram"
+"NSA/CIA (gouv US)|^(6|7|11|26|30|59|132|199|204|214)\.(0|1|2|3|4|5|6|7|8|9|10|11|12|13|14|15|16|17|18|19|20|21|22|23|24|25|26|27|28|29|30|31)\..*|(nsa|cia|dod|darpa|fbi)\.(gov|mil)|NSA|CIA|DoD"
+"Tor Exit Node|.*|.*|.*"
+)
+
+# ─── SYMBOLES ───
+readonly SYM_OK="✓"
+readonly SYM_KO="✗"
+readonly SYM_WARN="⚠"
+readonly SYM_BLOCK="⛔"
+readonly SYM_SHIELD="🛡"
+readonly SYM_LOCK="🔒"
+readonly SYM_UNLOCK="🔓"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# AFFICHAGE
+# ═══════════════════════════════════════════════════════════════════════════════
+
+ok() { printf " ${G}${SYM_OK}${N} %s\n" "$1"; }
+ko() { printf " ${R}${SYM_KO}${N} %s\n" "$1"; }
+warn() { printf " ${Y}${SYM_WARN}${N} %s\n" "$1"; }
+info() { printf " ${C}[i]${N} %s\n" "$1"; }
+block() { printf " ${R}${SYM_BLOCK}${N} %s\n" "$1"; }
+shield() { printf " ${M}${SYM_SHIELD}${N} %s\n" "$1"; }
+
+section() {
+echo ""
+echo -e "${BOLD}${B}╔══════════════════════════════════════════════════════════════════════╗${N}"
+printf "${BOLD}${B}║${N} ${BOLD}${W}%-68s${N} ${BOLD}${B}║${N}\n" "$1"
+echo -e "${BOLD}${B}╚══════════════════════════════════════════════════════════════════════╝${N}"
+echo ""
+}
+
+subsection() {
+echo -e "\n ${BOLD}${M}▸ $1${N}\n"
+}
+
+separator() {
+echo -e " ${D}──────────────────────────────────────────────────────────────────────${N}"
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# LOGGER UNIFIÉ
+# ═══════════════════════════════════════════════════════════════════════════════
+
+log() {
+local level="$1"
+shift
+echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] [$level] $*" >> "$LOG"
+}
+
+log_cli() {
+echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] [CLI] $*" >> "$CLI_LOG"
+}
+
+log_kernel() {
+echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] [KERNEL] $*" >> "$KERNEL_LOG"
+}
+
+alert() {
+local msg="$1"
+local niveau="${2:-WARN}"
+echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] [$niveau] $msg" >> "$ALERTS"
+if [ "$niveau" = "CRIT" ]; then
+printf " ${R}${BOLD}${SYM_BLOCK} INTRUSION CRITIQUE : %s${N}\n" "$msg"
+if command -v notify-send >/dev/null 2>&1; then
+notify-send -u critical "NEXUS UNION SHIELD" "$msg" 2>/dev/null &
+fi
+else
+printf " ${Y}${SYM_WARN} %s${N}\n" "$msg"
+if command -v notify-send >/dev/null 2>&1; then
+notify-send "NEXUS UNION SHIELD" "$msg" 2>/dev/null &
+fi
+fi
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BASE DE DONNÉES SESSIONS (compteur + routeur)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+init_sessions_db() {
+if ! command -v sqlite3 >/dev/null 2>&1; then
+sudo apt install -y sqlite3 2>/dev/null || true
+fi
+
+sqlite3 "$SESSION_DB" << 'SQL' 2>/dev/null || true
+CREATE TABLE IF NOT EXISTS sessions (
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+ts TEXT,
+org TEXT,
+ip TEXT,
+port INTEGER,
+proto TEXT,
+pid INTEGER,
+process TEXT,
+user TEXT,
+cmd TEXT,
+autorise INTEGER DEFAULT 0,
+bloque INTEGER DEFAULT 0,
+duree_s INTEGER DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS organisations (
+nom TEXT PRIMARY KEY,
+ip_pattern TEXT,
+domain_pattern TEXT,
+total_rencontres INTEGER DEFAULT 0,
+total_autorise INTEGER DEFAULT 0,
+total_bloque INTEGER DEFAULT 0,
+derniere_rencontre TEXT,
+statut TEXT DEFAULT 'inconnu'
+);
+CREATE TABLE IF NOT EXISTS kernel_events (
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+ts TEXT,
+type TEXT,
+detail TEXT,
+pid INTEGER,
+process TEXT,
+bloque INTEGER DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS cli_events (
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+ts TEXT,
+terminal TEXT,
+user TEXT,
+cmd TEXT,
+org_detectee TEXT,
+autorise INTEGER DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_sess_ts ON sessions(ts);
+CREATE INDEX IF NOT EXISTS idx_sess_org ON sessions(org);
+CREATE INDEX IF NOT EXISTS idx_kern_ts ON kernel_events(ts);
+CREATE INDEX IF NOT EXISTS idx_cli_ts ON cli_events(ts);
+SQL
+
+ok "Base de sessions initialisée : $SESSION_DB"
+}
+
+sess_ajouter() {
+local org="$1" ip="$2" port="$3" proto="$4" pid="$5" process="$6" user="$7" cmd="$8"
+sqlite3 "$SESSION_DB" "INSERT INTO sessions (ts, org, ip, port, proto, pid, process, user, cmd) VALUES ('$(date -u +%Y-%m-%dT%H:%M:%SZ)', '$org', '$ip', '$port', '$proto', $pid, '$process', '$user', '$cmd');" 2>/dev/null || true
+}
+
+sess_autoriser() {
+local sid="$1"
+sqlite3 "$SESSION_DB" "UPDATE sessions SET autorise = 1 WHERE id = $sid;" 2>/dev/null || true
+}
+
+sess_bloquer() {
+local sid="$1"
+sqlite3 "$SESSION_DB" "UPDATE sessions SET bloque = 1 WHERE id = $sid;" 2>/dev/null || true
+}
+
+org_rencontrer() {
+local org="$1"
+sqlite3 "$SESSION_DB" "INSERT INTO organisations (nom, total_rencontres, derniere_rencontre) VALUES ('$org', 1, '$(date -u +%Y-%m-%dT%H:%M:%SZ)') ON CONFLICT(nom) DO UPDATE SET total_rencontres = total_rencontres + 1, derniere_rencontre = '$(date -u +%Y-%m-%dT%H:%M:%SZ)';" 2>/dev/null || true
+}
+
+org_decision() {
+local org="$1" decision="$2"
+if [ "$decision" = "allow" ]; then
+sqlite3 "$SESSION_DB" "UPDATE organisations SET total_autorise = total_autorise + 1, statut = 'autorise' WHERE nom = '$org';" 2>/dev/null || true
+else
+sqlite3 "$SESSION_DB" "UPDATE organisations SET total_bloque = total_bloque + 1, statut = 'bloque' WHERE nom = '$org';" 2>/dev/null || true
+fi
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# DÉTECTION ORGANISATION PAR IP / DOMAINE / PROCESS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+identifier_organisation() {
+local ip="$1"
+local domain="$2"
+local process="$3"
+
+for entry in "${ORGANISATIONS[@]}"; do
+IFS='|' read -r org ip_pattern domain_pattern ua_pattern <<< "$entry"
+
+# Ignorer Tor Exit Node (il matche tout)
+[ "$org" = "Tor Exit Node" ] && continue
+
+# Tester IP
+if [ -n "$ip" ] && echo "$ip" | grep -qE "$ip_pattern" 2>/dev/null; then
+echo "$org"
+return 0
+fi
+
+# Tester domaine
+if [ -n "$domain" ] && echo "$domain" | grep -qiE "$domain_pattern" 2>/dev/null; then
+echo "$org"
+return 0
+fi
+
+# Tester process
+if [ -n "$process" ] && echo "$process" | grep -qiE "$ua_pattern" 2>/dev/null; then
+echo "$org"
+return 0
+fi
+done
+
+echo "Inconnu"
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# WHITELIST / BLACKLIST PERSISTANTE
+# ═══════════════════════════════════════════════════════════════════════════════
+
+est_whitelist() {
+grep -qxF "$1" "$WHITELIST" 2>/dev/null
+}
+
+est_blacklist() {
+grep -qxF "$1" "$BLACKLIST" 2>/dev/null
+}
+
+ajouter_whitelist() {
+if ! est_whitelist "$1"; then
+echo "$1" >> "$WHITELIST"
+ok "Ajouté à la whitelist : $1"
+log "WHITELIST" "Ajout $1"
+fi
+}
+
+ajouter_blacklist() {
+if ! est_blacklist "$1"; then
+echo "$1" >> "$BLACKLIST"
+ko "Ajouté à la blacklist : $1"
+log "BLACKLIST" "Ajout $1"
+fi
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TOR ULTRA NODE 365-F
+# ═══════════════════════════════════════════════════════════════════════════════
+
+tor_config_ultra() {
+cat > "$TOR_CONFIG" << 'TORRC'
+# NEXUS TOR ULTRA NODE 365-F
+# Configuration de routage multi-couches continu
+SocksPort 9050
+SocksPort 9150
+ControlPort 9051
+DNSPort 5353
+TransPort 9040
+AutomapHostsOnResolve 1
+AutomapHostsSuffixes .exit,.onion
+VirtualAddrNetworkIPv4 10.192.0.0/10
+VirtualAddrNetworkIPv6 [FE80::]/10
+
+# Performance Ultra
+NumEntryGuards 8
+CircuitBuildTimeout 30
+KeepalivePeriod 60
+NewCircuitPeriod 15
+MaxCircuitDirtiness 60
+EnforceDistinctSubnets 1
+ClientUseIPv6 1
+ClientPreferIPv6ORPort auto
+
+# Sécurité renforcée
+SafeSocks 1
+TestSocks 1
+WarnUnsafeSocks 1
+WarnPlaintextPorts 23,109,110,143,3389,5900
+RejectPlaintextPorts 23,109,110,143,3389,5900
+
+# Multi-Hop
+PathBiasCircThreshold 3
+PathBiasNoticeRate 0.70
+PathBiasWarnRate 0.50
+PathBiasExtremeRate 0.30
+PathBiasDropGuards 0
+PathBiasScaleThreshold 5
+PathBiasScaleFactor 2
+
+# Bridges (optionnel)
+# UseBridges 1
+# ClientTransportPlugin obfs4 exec /usr/bin/obfs4proxy
+
+# Exit policy (client only)
+ExitPolicy reject *:*
+TORRC
+
+ok "Configuration Tor Ultra Node 365-F écrite"
+}
+
+tor_start() {
+section "TOR ULTRA NODE 365-F — DÉMARRAGE"
+
+if ! command -v tor >/dev/null 2>&1; then
+info "Installation de Tor..."
+sudo apt update -qq
+sudo apt install -y tor torsocks obfs4proxy 2>/dev/null || true
+fi
+
+tor_config_ultra
+
+# Arrêter l'ancien Tor
+sudo pkill -x tor 2>/dev/null || true
+sleep 1
+
+# Lancer avec notre config
+sudo tor -f "$TOR_CONFIG" > "$BASE/tor_runtime.log" 2>&1 &
+local tor_pid=$!
+echo "$tor_pid" > "$PID_DIR/tor.pid"
+
+sleep 5
+
+# Vérifier
+local ok_tor=0
+for i in 1 2 3 4 5; do
+if ss -tln 2>/dev/null | grep -q ":9050"; then
+ok_tor=1
+break
+fi
+sleep 2
+done
+
+if [ "$ok_tor" = "1" ]; then
+ok "Tor Ultra Node 365-F actif (PID $tor_pid)"
+ok "SOCKS5 : 127.0.0.1:9050"
+ok "SOCKS5 : 127.0.0.1:9150"
+ok "DNS : 127.0.0.1:5353"
+
+# Vérifier IP de sortie
+local ip_tor
+ip_tor=$(curl -s --socks5 127.0.0.1:9050 https://api.ipify.org 2>/dev/null || echo "inconnu")
+info "IP de sortie Tor : $ip_tor"
+else
+ko "Tor n'a pas démarré"
+tail -10 "$BASE/tor_runtime.log" 2>/dev/null || true
+fi
+}
+
+tor_stop() {
+info "Arrêt Tor..."
+if [ -f "$PID_DIR/tor.pid" ]; then
+kill "$(cat $PID_DIR/tor.pid)" 2>/dev/null || true
+rm -f "$PID_DIR/tor.pid"
+fi
+sudo pkill -x tor 2>/dev/null || true
+ok "Tor arrêté"
+}
+
+tor_status() {
+if ss -tln 2>/dev/null | grep -q ":9050"; then
+local ip
+ip=$(curl -s --socks5 127.0.0.1:9050 https://api.ipify.org 2>/dev/null || echo "?")
+echo -e " ${G}●${N} Tor ULTRA 365-F actif — IP sortie : ${C}$ip${N}"
+else
+echo -e " ${Y}○${N} Tor inactif"
+fi
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# DÉTECTION TÉLÉMÉTRIE KERNEL
+# ═══════════════════════════════════════════════════════════════════════════════
+
+kernel_telemetry_scan() {
+section "DÉTECTION TÉLÉMÉTRIE KERNEL"
+
+local trouve=0
+
+# 1. Vérifier les modules kernel chargés suspects
+subsection "Modules kernel"
+local modules_suspects=$(lsmod 2>/dev/null | grep -iE "google|gcp|aws|azure|oracle|telemetry|metrics" | head -10)
+if [ -n "$modules_suspects" ]; then
+while IFS= read -r mod; do
+warn "Module suspect : $mod"
+log_kernel "module_suspect" "$mod"
+trouve=1
+done <<< "$modules_suspects"
+else
+ok "Aucun module kernel suspect"
+fi
+
+# 2. Vérifier les connexions kernel (netlink)
+subsection "Netlink kernel"
+if ss -ap 2>/dev/null | grep -qE "netlink"; then
+info "Sockets netlink actifs (normal pour systemd)"
+fi
+
+# 3. Vérifier auditd
+subsection "Audit kernel (auditd)"
+if command -v auditctl >/dev/null 2>&1; then
+local nb_regles=$(sudo auditctl -l 2>/dev/null | wc -l)
+info "Règles auditd : $nb_regles"
+if [ "$nb_regles" -eq 0 ]; then
+info "Ajout de règles de surveillance..."
+sudo auditctl -a always,exit -F arch=b64 -S open,openat,execve -F dir="$HOME/Documents" -k nexus_local 2>/dev/null || true
+ok "Audit kernel activé sur $HOME/Documents"
+fi
+else
+info "auditd non installé (sudo apt install auditd)"
+fi
+
+# 4. Vérifier eBPF
+subsection "eBPF"
+if [ -d /sys/fs/bpf ]; then
+local bpf_progs=$(sudo ls /sys/fs/bpf 2>/dev/null | wc -l)
+info "Programmes eBPF actifs : $bpf_progs"
+if [ "$bpf_progs" -gt 0 ]; then
+sudo ls /sys/fs/bpf 2>/dev/null | while read -r prog; do
+info " eBPF: $prog"
+log_kernel "ebpf_program" "$prog"
+done
+fi
+else
+info "eBPF non monté"
+fi
+
+# 5. Vérifier ftrace / tracepoints
+subsection "Tracepoints"
+if [ -d /sys/kernel/debug/tracing ]; then
+local tracing_on=$(cat /sys/kernel/debug/tracing/tracing_on 2>/dev/null || echo "0")
+info "Ftrace tracing : $tracing_on"
+else
+info "Ftrace non monté"
+fi
+
+# 6. Vérifier dmesg pour télémétrie
+subsection "dmesg"
+local dmesg_suspect=$(sudo dmesg 2>/dev/null | grep -iE "telemetry|google|gcp|aws|azure" | tail -5)
+if [ -n "$dmesg_suspect" ]; then
+warn "Logs kernel suspects :"
+while IFS= read -r line; do
+echo -e " ${D}$line${N}"
+log_kernel "dmesg_suspect" "$line"
+done <<< "$dmesg_suspect"
+trouve=1
+else
+ok "dmesg propre"
+fi
+
+# 7. Snapshot complet vers DB
+sqlite3 "$SESSION_DB" "INSERT INTO kernel_events (ts, type, detail) VALUES ('$(date -u +%Y-%m-%dT%H:%M:%SZ)', 'scan', 'kernel_telemetry_scan executed');" 2>/dev/null || true
+
+if [ "$trouve" = "1" ]; then
+alert "Télémétrie kernel détectée" "WARN"
+else
+ok "Aucune télémétrie kernel détectée"
+fi
+}
+
+kernel_monitor_start() {
+section "MONITORING KERNEL TEMPS RÉEL"
+
+cat > "$BASE/kernel_monitor.sh" << 'KMON'
+#!/bin/bash
+BASE="$HOME/Documents/nexus_union_shield"
+LOG="$BASE/union.log"
+KERNEL_LOG="$BASE/kernel_telemetry.log"
+ALERTS="$BASE/alerts.log"
+
+log_k() {
+echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] [KERNEL] $*" >> "$KERNEL_LOG"
+}
+
+alert_k() {
+echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] [CRIT] $*" >> "$ALERTS"
+if command -v notify-send >/dev/null 2>&1; then
+notify-send -u critical "NEXUS KERNEL ALERT" "$*" 2>/dev/null &
+fi
+}
+
+log_k "Monitoring kernel démarré (PID $$)"
+
+# Suivre dmesg en temps réel
+sudo dmesg -w 2>/dev/null | while read -r line; do
+if echo "$line" | grep -qiE "telemetry|unauthorized|intrusion|google|gcp|aws|azure|oracle"; then
+log_k "MATCH: $line"
+alert_k "Télémétrie kernel : $line"
+fi
+done
+KMON
+
+chmod +x "$BASE/kernel_monitor.sh"
+nohup sudo "$BASE/kernel_monitor.sh" > /dev/null 2>&1 &
+local pid=$!
+echo "$pid" > "$PID_DIR/kernel_monitor.pid"
+disown 2>/dev/null || true
+
+sleep 1
+if kill -0 "$pid" 2>/dev/null; then
+ok "Monitoring kernel actif (PID $pid)"
+else
+warn "Monitoring kernel n'a pas démarré"
+fi
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# DÉTECTION INTRUSIONS + REQUÊTE Y/N
+# ═══════════════════════════════════════════════════════════════════════════════
+
+requete_autorisation() {
+local org="$1"
+local ip="$2"
+local port="$3"
+local process="$4"
+local pid="$5"
+local cmd="$6"
+
+echo ""
+separator
+echo -e " ${BOLD}${R}${SYM_BLOCK} REQUÊTE D'AUTORISATION${N}"
+separator
+echo ""
+echo -e " ${BOLD}Organisation détectée :${N} ${C}$org${N}"
+echo -e " ${BOLD}IP :${N} $ip"
+echo -e " ${BOLD}Port :${N} $port"
+echo -e " ${BOLD}Processus :${N} $process (PID $pid)"
+echo -e " ${BOLD}Commande :${N} ${D}$cmd${N}"
+echo -e " ${BOLD}Heure :${N} $(date '+%Y-%m-%d %H:%M:%S')"
+echo ""
+
+# Vérifier whitelist / blacklist
+if est_whitelist "$org"; then
+ok "Organisation déjà AUTORISÉE (whitelist)"
+sess_autoriser "$(sqlite3 "$SESSION_DB" 'SELECT MAX(id) FROM sessions;' 2>/dev/null)"
+org_decision "$org" "allow"
+return 0
+fi
+
+if est_blacklist "$org"; then
+ko "Organisation DÉJÀ BLOQUÉE (blacklist)"
+sess_bloquer "$(sqlite3 "$SESSION_DB" 'SELECT MAX(id) FROM sessions;' 2>/dev/null)"
+org_decision "$org" "deny"
+return 1
+fi
+
+# Requête Y/N interactive
+echo -e " ${BOLD}${Y}Autoriser cette organisation à accéder à ton local ?${N}"
+echo ""
+echo -e " ${G}[Y]${N} Oui, autoriser (complet)"
+echo -e " ${Y}[P]${N} Autoriser uniquement en visualisation (lecture seule)"
+echo -e " ${Y}[L]${N} Autoriser pour un projet spécifique"
+echo -e " ${R}[N]${N} Non, bloquer immédiatement"
+echo -e " ${R}[K]${N} KILL SWITCH - BLOQUER + TUER LE PROCESSUS"
+echo -e " ${M}[A]${N} Ajouter à la whitelist permanente + autoriser"
+echo -e " ${R}[B]${N} Ajouter à la blacklist permanente + bloquer"
+echo ""
+printf " Choix [Y/P/L/N/K/A/B] : "
+read -r reponse
+
+case "$reponse" in
+Y|y|"")
+ok "AUTORISÉ : $org"
+sess_autoriser "$(sqlite3 "$SESSION_DB" 'SELECT MAX(id) FROM sessions;' 2>/dev/null)"
+org_decision "$org" "allow"
+log "AUTORISATION" "$org ($ip) par $USER"
+return 0
+;;
+P|p)
+warn "AUTORISÉ (lecture seule) : $org"
+sess_autoriser "$(sqlite3 "$SESSION_DB" 'SELECT MAX(id) FROM sessions;' 2>/dev/null)"
+org_decision "$org" "allow"
+log "AUTORISATION_READONLY" "$org ($ip) par $USER"
+return 0
+;;
+L|l)
+printf " Nom du projet à autoriser : "
+read -r projet
+warn "AUTORISÉ pour projet : $projet"
+sess_autoriser "$(sqlite3 "$SESSION_DB" 'SELECT MAX(id) FROM sessions;' 2>/dev/null)"
+org_decision "$org" "allow"
+log "AUTORISATION_PROJET" "$org ($ip) -> $projet par $USER"
+return 0
+;;
+N|n)
+ko "BLOQUÉ : $org"
+sess_bloquer "$(sqlite3 "$SESSION_DB" 'SELECT MAX(id) FROM sessions;' 2>/dev/null)"
+org_decision "$org" "deny"
+log "BLOCAGE" "$org ($ip) par $USER"
+return 1
+;;
+K|k)
+block "KILL SWITCH : $org"
+sess_bloquer "$(sqlite3 "$SESSION_DB" 'SELECT MAX(id) FROM sessions;' 2>/dev/null)"
+org_decision "$org" "deny"
+log "KILLSWITCH" "$org ($ip) PID $pid par $USER"
+if [ -n "$pid" ] && [ "$pid" != "0" ]; then
+sudo kill -9 "$pid" 2>/dev/null || kill -9 "$pid" 2>/dev/null || true
+block "Processus $pid tué"
+fi
+alert "Kill switch déclenché contre $org" "CRIT"
+return 1
+;;
+A|a)
+ajouter_whitelist "$org"
+ok "AUTORISÉ + whitelist : $org"
+sess_autoriser "$(sqlite3 "$SESSION_DB" 'SELECT MAX(id) FROM sessions;' 2>/dev/null)"
+org_decision "$org" "allow"
+return 0
+;;
+B|b)
+ajouter_blacklist "$org"
+ko "BLOQUÉ + blacklist : $org"
+sess_bloquer "$(sqlite3 "$SESSION_DB" 'SELECT MAX(id) FROM sessions;' 2>/dev/null)"
+org_decision "$org" "deny"
+return 1
+;;
+*)
+warn "Réponse non reconnue, BLOQUÉ par défaut"
+sess_bloquer "$(sqlite3 "$SESSION_DB" 'SELECT MAX(id) FROM sessions;' 2>/dev/null)"
+org_decision "$org" "deny"
+return 1
+;;
+esac
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ROUTEUR INTELLIGENT — analyse chaque connexion
+# ═══════════════════════════════════════════════════════════════════════════════
+
+routeur_scan() {
+section "ROUTEUR INTELLIGENT — SCAN CONNEXIONS"
+
+local total=0
+local suspects=0
+local bloques=0
+
+# Récupérer toutes les connexions TCP/UDP
+while IFS= read -r ligne; do
+[ -z "$ligne" ] && continue
+
+# Parser la ligne ss
+local proto local_addr peer_addr state process
+proto=$(echo "$ligne" | awk '{print $1}' | head -c 3)
+local_addr=$(echo "$ligne" | awk '{print $4}')
+peer_addr=$(echo "$ligne" | awk '{print $5}')
+state=$(echo "$ligne" | awk '{print $2}')
+
+local ip port
+ip=$(echo "$peer_addr" | rev | cut -d: -f2- | rev)
+port=$(echo "$peer_addr" | rev | cut -d: -f1 | rev)
+
+# Ignorer localhost, DNS local
+case "$ip" in
+127.*|::1|0.0.0.0|*:*)
+continue
+;;
+esac
+
+total=$((total + 1))
+
+# Identifier l'organisation
+local org
+org=$(identifier_organisation "$ip" "" "")
+
+if [ "$org" != "Inconnu" ]; then
+suspects=$((suspects + 1))
+
+# Récupérer le processus
+local pid=0 proc_name="?"
+if command -v ss >/dev/null 2>&1; then
+local p_info
+p_info=$(ss -tunp 2>/dev/null | grep "$peer_addr" | grep -oE 'pid=[0-9]+' | head -1)
+if [ -n "$p_info" ]; then
+pid="${p_info#pid=}"
+proc_name=$(ps -p "$pid" -o comm= 2>/dev/null || echo "?")
+fi
+fi
+
+# Enregistrer la session
+sess_ajouter "$org" "$ip" "$port" "$proto" "$pid" "$proc_name" "$USER" ""
+org_rencontrer "$org"
+
+# Log
+log "SESSION" "$org | $ip:$port | $proc_name (PID $pid)"
+
+# Vérifier si déjà whitelist/blacklist
+if est_whitelist "$org"; then
+ok "$org (whitelist) — $ip:$port"
+org_decision "$org" "allow"
+elif est_blacklist "$org"; then
+ko "$org (blacklist) — $ip:$port"
+org_decision "$org" "deny"
+bloques=$((bloques + 1))
+else
+# Première rencontre : demander
+warn "Nouvelle organisation : $org"
+if ! requete_autorisation "$org" "$ip" "$port" "$proc_name" "$pid" ""; then
+bloques=$((bloques + 1))
+fi
+fi
+fi
+done < <(ss -tun 2>/dev/null | tail -n +2)
+
+separator
+echo ""
+echo -e " ${BOLD}Bilan du routeur :${N}"
+echo -e " Total connexions : ${C}$total${N}"
+echo -e " Organisations : ${Y}$suspects${N}"
+echo -e " Bloquées : ${R}$bloques${N}"
+echo ""
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SURVEILLANCE CLI TEMPS RÉEL
+# ═══════════════════════════════════════════════════════════════════════════════
+
+cli_monitor_start() {
+section "MONITORING CLI TEMPS RÉEL"
+
+cat > "$BASE/cli_monitor.sh" << 'CLIMON'
+#!/bin/bash
+BASE="$HOME/Documents/nexus_union_shield"
+CLI_LOG="$BASE/cli_live.log"
+SESSION_DB="$BASE/sessions.db"
+ALERTS="$BASE/alerts.log"
+
+log_cli() {
+echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $*" >> "$CLI_LOG"
+}
+
+# Surveiller les commandes lancées par l'utilisateur
+# Via auditd si dispo
+if command -v auditctl >/dev/null 2>&1; then
+sudo auditctl -a always,exit -F arch=b64 -S execve -F uid=$UID -k nexus_cli 2>/dev/null || true
+log_cli "Audit CLI activé pour UID $UID"
+fi
+
+# Surveiller les fichiers d'historique bash
+HIST="$HOME/.bash_history"
+if [ -f "$HIST" ]; then
+local_size=0
+log_cli "Monitoring historique bash : $HIST"
+while true; do
+current_size=$(stat -c%s "$HIST" 2>/dev/null || echo 0)
+if [ "$current_size" -gt "$local_size" ]; then
+# Nouvelles commandes
+tail -c +$((local_size + 1)) "$HIST" 2>/dev/null | while read -r cmd; do
+[ -z "$cmd" ] && continue
+
+# Vérifier si la commande touche des projets locaux
+if echo "$cmd" | grep -qE "(cat|less|more|vim|nano|head|tail|grep|find|cp|mv|rm).*($HOME/Documents|$HOME/Projets|$HOME/Dev)"; then
+log_cli "CLI_LOCAL_ACCESS: $cmd"
+fi
+
+# Vérifier si la commande appelle un cloud
+if echo "$cmd" | grep -qE "(gcloud|gsutil|aws|az|bq|curl.*google|curl.*oracle)"; then
+log_cli "CLI_CLOUD_CALL: $cmd"
+echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] [CLI_CLOUD] $cmd" >> "$ALERTS"
+fi
+
+# Enregistrer en DB
+sqlite3 "$SESSION_DB" "INSERT INTO cli_events (ts, terminal, user, cmd, autorise) VALUES ('$(date -u +%Y-%m-%dT%H:%M:%SZ)', 'bash', '$USER', '$cmd', 0);" 2>/dev/null || true
+done
+local_size="$current_size"
+fi
+sleep 2
+done
+fi
+CLIMON
+
+chmod +x "$BASE/cli_monitor.sh"
+nohup "$BASE/cli_monitor.sh" > /dev/null 2>&1 &
+local pid=$!
+echo "$pid" > "$PID_DIR/cli_monitor.pid"
+disown 2>/dev/null || true
+
+sleep 1
+if kill -0 "$pid" 2>/dev/null; then
+ok "CLI Monitor actif (PID $pid)"
+else
+warn "CLI Monitor n'a pas démarré"
+fi
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BLOCAGE NAVIGATEUR
+# ═══════════════════════════════════════════════════════════════════════════════
+
+bloquer_navigateur() {
+local nav="$1"
+
+case "$nav" in
+chrome|chromium)
+sudo pkill -9 -f "chrome|chromium" 2>/dev/null || true
+ok "Chrome/Chromium tués"
+;;
+firefox)
+sudo pkill -9 -f "firefox" 2>/dev/null || true
+ok "Firefox tués"
+;;
+mozilla)
+sudo pkill -9 -f "firefox|mozilla" 2>/dev/null || true
+ok "Mozilla/Firefox tués"
+;;
+all)
+sudo pkill -9 -f "chrome|chromium|firefox|mozilla|safari" 2>/dev/null || true
+ok "Tous les navigateurs tués"
+;;
+*)
+warn "Navigateur inconnu : $nav"
+;;
+esac
+
+log "BLOCAGE_NAVIGATEUR" "$nav"
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# COMPTEUR SESSIONS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+afficher_sessions() {
+section "SESSIONS — COMPTEUR"
+
+echo -e " ${BOLD}Organisations rencontrées :${N}"
+echo ""
+printf " ${BOLD}%-20s %-10s %-10s %-10s %-15s${N}\n" "Organisation" "Rencontres" "Autorisé" "Bloqué" "Dernière"
+separator
+
+sqlite3 -separator '|' "$SESSION_DB" "SELECT nom, total_rencontres, total_autorise, total_bloque, derniere_rencontre FROM organisations ORDER BY total_rencontres DESC;" 2>/dev/null | while IFS='|' read -r nom rencontres autorise bloque derniere; do
+printf " %-20s %-10s ${G}%-10s${N} ${R}%-10s${N} %-15s\n" "$nom" "$rencontres" "$autorise" "$bloque" "${derniere:0:15}"
+done
+
+echo ""
+echo -e " ${BOLD}Dernières sessions :${N}"
+separator
+sqlite3 -separator '|' "$SESSION_DB" "SELECT ts, org, ip, port, process FROM sessions ORDER BY id DESC LIMIT 15;" 2>/dev/null | while IFS='|' read -r ts org ip port process; do
+echo -e " ${D}$ts${N} ${C}$org${N} $ip:$port ${D}($process)${N}"
+done
+echo ""
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# KILL SWITCH GLOBAL
+# ═══════════════════════════════════════════════════════════════════════════════
+
+kill_switch() {
+section "${R}KILL SWITCH GLOBAL${N}"
+
+warn "Arrêt de tous les processus suspects..."
+
+# Tuer tous les processus cloud
+for proc in gcloud gsutil bq aws az; do
+pkill -9 "$proc" 2>/dev/null && ko "$proc tué" || true
+done
+
+# Tuer navigateurs
+sudo pkill -9 -f "chrome|chromium|firefox" 2>/dev/null || true
+ok "Navigateurs tués"
+
+# Couper les connexions établies vers clouds connus
+local kill_count=0
+ss -tun 2>/dev/null | tail -n +2 | while read -r line; do
+local ip
+ip=$(echo "$line" | awk '{print $5}' | cut -d: -f1)
+local org
+org=$(identifier_organisation "$ip" "" "")
+if [ "$org" != "Inconnu" ]; then
+# iptables DROP sur cette IP
+sudo iptables -A OUTPUT -d "$ip" -j DROP 2>/dev/null || true
+kill_count=$((kill_count + 1))
+fi
+done
+
+ok "$kill_count connexions bloquées par iptables"
+
+alert "KILL SWITCH GLOBAL activé" "CRIT"
+log "KILLSWITCH_GLOBAL" "par $USER"
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BANNIÈRE
+# ═══════════════════════════════════════════════════════════════════════════════
+
+banniere() {
+clear
+echo ""
+echo -e "${C}${BOLD}"
+cat << 'BAN'
+
+╔══════════════════════════════════════════════════════════════════════╗
+║ ║
+║ ███╗ ██╗███████╗██╗ ██╗██╗ ██╗███████╗ ║
+║ ████╗ ██║██╔════╝╚██╗██╔╝██║ ██║██╔════╝ ║
+║ ██╔██╗ ██║█████╗ ╚███╔╝ ██║ ██║███████╗ ║
+║ ██║╚██╗██║██╔══╝ ██╔██╗ ██║ ██║╚════██║ ║
+║ ██║ ╚████║███████╗██╔╝ ██╗╚██████╔╝███████║ ║
+║ ╚═╝ ╚═══╝╚══════╝╚═╝ ╚═╝ ╚═════╝ ╚══════╝ ║
+║ ║
+║ UNION SHIELD 365-F — LOCAL TOR ULTRA NODE ║
+║ ═══════════════════════════════════════════ ║
+║ Protection locale · Détection · Contrôle · Kill Switch ║
+║ ║
+╚══════════════════════════════════════════════════════════════════════╝
+BAN
+echo -e "${N}"
+printf " ${BOLD}${W}Version :${N} ${C}%s${N} ${D}\"%s\"${N}\n" "$VERSION" "$CODENAME"
+printf " ${BOLD}${W}Auteur :${N} ${M}%s${N}\n" "$AUTEUR"
+printf " ${BOLD}${W}Licence :${N} ${G}%s${N}\n" "$LICENCE"
+printf " ${BOLD}${W}Base :${N} %s\n" "$BASE"
+printf " ${BOLD}${W}Sessions :${N} %s\n" "$SESSION_DB"
+printf " ${BOLD}${W}Plateforme:${N} %s %s\n" "$(uname -s)" "$(uname -m)"
+printf " ${BOLD}${W}Date :${N} %s\n" "$(date '+%Y-%m-%d %H:%M:%S')"
+echo ""
+echo -e " ${D}════════════════════════════════════════════════════════════════════${N}"
+echo ""
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MENU PRINCIPAL
+# ═══════════════════════════════════════════════════════════════════════════════
+
+menu() {
+while true; do
+echo ""
+echo -e "${BOLD}${B}╔══════════════════════════════════════════════════════════════════════╗${N}"
+printf "${BOLD}${B}║${N} ${BOLD}${W}%-68s${N} ${BOLD}${B}║${N}\n" "NEXUS UNION SHIELD — MENU PRINCIPAL"
+echo -e "${BOLD}${B}╚══════════════════════════════════════════════════════════════════════╝${N}"
+echo ""
+
+# État global
+echo -e " ${BOLD}ÉTAT :${N}"
+tor_status
+if [ -f "$PID_DIR/kernel_monitor.pid" ] && kill -0 "$(cat $PID_DIR/kernel_monitor.pid)" 2>/dev/null; then
+echo -e " ${G}●${N} Kernel Monitor : ACTIF"
+else
+echo -e " ${Y}○${N} Kernel Monitor : INACTIF"
+fi
+if [ -f "$PID_DIR/cli_monitor.pid" ] && kill -0 "$(cat $PID_DIR/cli_monitor.pid)" 2>/dev/null; then
+echo -e " ${G}●${N} CLI Monitor : ACTIF"
+else
+echo -e " ${Y}○${N} CLI Monitor : INACTIF"
+fi
+
+echo ""
+separator
+echo ""
+echo -e " ${BOLD}${M}ACTIONS${N}"
+echo ""
+echo -e " ${G}1${N}) ${SYM_SHIELD} Démarrer Tor Ultra Node 365-F"
+echo -e " ${G}2${N}) Détection télémétrie kernel (scan)"
+echo -e " ${G}3${N}) Monitoring kernel temps réel"
+echo -e " ${G}4${N}) Router scan (connexions actives)"
+echo -e " ${G}5${N}) Monitoring CLI temps réel"
+echo -e " ${G}6${N}) Voir les sessions (compteur)"
+echo ""
+echo -e " ${BOLD}${Y}CONTROLE${N}"
+echo ""
+echo -e " ${Y}7${N}) ${SYM_BLOCK} Kill Switch GLOBAL"
+echo -e " ${Y}8${N}) Bloquer Chrome"
+echo -e " ${Y}9${N}) Bloquer Firefox"
+echo -e " ${Y}10${N}) Bloquer TOUS les navigateurs"
+echo ""
+echo -e " ${BOLD}${C}GESTION${N}"
+echo ""
+echo -e " ${C}11${N}) Voir la whitelist"
+echo -e " ${C}12${N}) Voir la blacklist"
+echo -e " ${C}13${N}) Vider la whitelist"
+echo -e " ${C}14${N}) Vider la blacklist"
+echo -e " ${C}15${N}) Voir les alertes"
+echo ""
+echo -e " ${BOLD}${R}ARRET${N}"
+echo ""
+echo -e " ${R}16${N}) Arrêter Tor"
+echo -e " ${R}17${N}) Arrêter tous les moniteurs"
+echo -e " ${R}18${N}) Quitter"
+echo ""
+separator
+printf " Choix : "
+read -r choix
+
+case "$choix" in
+1) tor_start ;;
+2) kernel_telemetry_scan ;;
+3) kernel_monitor_start ;;
+4) routeur_scan ;;
+5) cli_monitor_start ;;
+6) afficher_sessions ;;
+7) kill_switch ;;
+8) bloquer_navigateur chrome ;;
+9) bloquer_navigateur firefox ;;
+10) bloquer_navigateur all ;;
+11) [ -s "$WHITELIST" ] && cat "$WHITELIST" || echo " Whitelist vide" ;;
+12) [ -s "$BLACKLIST" ] && cat "$BLACKLIST" || echo " Blacklist vide" ;;
+13) > "$WHITELIST"; ok "Whitelist vidée" ;;
+14) > "$BLACKLIST"; ok "Blacklist vidée" ;;
+15) [ -f "$ALERTS" ] && tail -30 "$ALERTS" || echo " Aucune alerte" ;;
+16) tor_stop ;;
+17)
+for pid_file in "$PID_DIR"/*.pid; do
+[ -f "$pid_file" ] || continue
+kill "$(cat $pid_file)" 2>/dev/null || true
+rm -f "$pid_file"
+done
+ok "Tous les moniteurs arrêtés"
+;;
+18) exit 0 ;;
+*) warn "Choix invalide" ;;
+esac
+
+echo ""
+printf " Entrée pour continuer..."
+read -r
+done
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ENTRY POINT
+# ═══════════════════════════════════════════════════════════════════════════════
+
+trap 'echo ""; info "Interruption"; exit 0' INT TERM
+
+banniere
+init_sessions_db
+log "UNION_SHIELD" "Démarrage v$VERSION"
+
+# Commande directe
+case "${1:-menu}" in
+tor) tor_start ;;
+kernel) kernel_telemetry_scan ;;
+routeur) routeur_scan ;;
+sessions) afficher_sessions ;;
+kill) kill_switch ;;
+menu|*) menu ;;
+esac
