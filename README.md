@@ -1020,21 +1020,3 @@ Repo : https://github.com/Aissamohammedi88/node-365f-union-shield
 ```
 
 ---
-
-Récapitulatif de ce qu'il te manque pour publier
-
-Fichier Statut Priorité
-node-365f-union-shield.sh ✅ Tu l'as —
-README.md ❌ À créer 🔴 Critique
-LICENSE ❌ À créer 🔴 Critique
-CHANGELOG.md ❌ À créer 🟠 Important
-CONTRIBUTING.md ❌ À créer 🟡 Utile
-SECURITY.md ❌ À créer 🟠 Important
-.gitignore ❌ À créer 🟠 Important
-.github/workflows/*.yml ❌ À créer 🟡 Utile (CI)
-.github/ISSUE_TEMPLATE/* ❌ À créer 🟡 Utile
-docs/INSTALL.md ❌ À créer 🟡 Utile
-docs/USAGE.md ❌ À créer 🟡 Utile
-docs/ARCHITECTURE.md ❌ À créer 🟢 Bonus
-tests/run_all.sh ❌ À créer 🟡 Utile
-scripts/install.sh ❌ À créer 🟢 Bonus
